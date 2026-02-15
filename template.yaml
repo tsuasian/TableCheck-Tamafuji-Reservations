@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Tamafuji Reservation Checker — polls TableCheck every 2 min and sends SMS alerts
+
+Parameters:
+  TwilioAccountSid:
+    Type: String
+    NoEcho: true
+  TwilioAuthToken:
+    Type: String
+    NoEcho: true
+  TwilioFromNumber:
+    Type: String
+    Description: Twilio phone number (E.164 format, e.g. +18081234567)
+  NotifyPhones:
+    Type: String
+    Description: Comma-separated phone numbers to notify (E.164)
+    Default: ""
+  DefaultPartySize:
+    Type: String
+    Default: "2"
+  ShopSlug:
+    Type: String
+    Default: tamafuji-us-kapahulu
+  ScheduleEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Enable/disable the EventBridge schedule
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 120
+    MemorySize: 256
+
+Resources:
+  TamafujiTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-table"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  WatchesApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/api.handler
+      CodeUri: .
+      Description: CRUD API for watch management
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TamafujiTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TamafujiTable
+      Events:
+        CreateWatch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WatchesApi
+            Path: /watches
+            Method: POST
+        ListWatches:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WatchesApi
+            Path: /watches
+            Method: GET
+        GetWatch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WatchesApi
+            Path: /watches/{id}
+            Method: GET
+        UpdateWatch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WatchesApi
+            Path: /watches/{id}
+            Method: PATCH
+        DeleteWatch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WatchesApi
+            Path: /watches/{id}
+            Method: DELETE
+
+  CheckerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/checker.handler
+      CodeUri: .
+      Description: Checks TableCheck availability and sends SMS alerts
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TamafujiTable
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_FROM_NUMBER: !Ref TwilioFromNumber
+          NOTIFY_PHONES: !Ref NotifyPhones
+          DEFAULT_PARTY_SIZE: !Ref DefaultPartySize
+          TABLECHECK_SHOP_SLUG: !Ref ShopSlug
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TamafujiTable
+      Events:
+        CheckSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(2 minutes)
+            Enabled: !Ref ScheduleEnabled
+
+Outputs:
+  TableName:
+    Value: !Ref TamafujiTable
+  CheckerFunctionArn:
+    Value: !GetAtt CheckerFunction.Arn
+  CheckerFunctionName:
+    Value: !Ref CheckerFunction
+  ApiUrl:
+    Description: URL of the watches API
+    Value: !Sub "https://${WatchesApi}.execute-api.${AWS::Region}.amazonaws.com"
