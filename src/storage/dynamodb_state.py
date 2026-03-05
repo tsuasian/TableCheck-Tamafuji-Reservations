@@ -30,6 +30,10 @@ class DynamoDBStateTracker:
         now_iso = snapshot.checked_at.isoformat()
 
         for slot in snapshot.slots:
+            # Skip UNKNOWN slots — no point tracking dates outside the booking window
+            if slot.status == SlotStatus.UNKNOWN:
+                continue
+
             pk = f"AVAIL#{slot.date.isoformat()}"
             sk = f"SLOT#{slot.time}#{slot.party_size}"
 

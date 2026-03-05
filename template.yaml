@@ -27,11 +27,24 @@ Parameters:
     Default: "true"
     AllowedValues: ["true", "false"]
     Description: Enable/disable the EventBridge schedule
+  SesFromEmail:
+    Type: String
+    Default: ""
+    Description: Verified SES sender email address
+  NotifyEmails:
+    Type: String
+    Default: ""
+    Description: Comma-separated recipient email addresses
+  SmsEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Enable/disable SMS notifications (set false while A2P pending)
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 120
+    Timeout: 300
     MemorySize: 256
 
 Resources:
@@ -129,14 +142,24 @@ Resources:
           NOTIFY_PHONES: !Ref NotifyPhones
           DEFAULT_PARTY_SIZE: !Ref DefaultPartySize
           TABLECHECK_SHOP_SLUG: !Ref ShopSlug
+          SES_FROM_EMAIL: !Ref SesFromEmail
+          NOTIFY_EMAILS: !Ref NotifyEmails
+          SMS_ENABLED: !Ref SmsEnabled
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TamafujiTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*"
       Events:
         CheckSchedule:
           Type: Schedule
           Properties:
-            Schedule: rate(2 minutes)
+            Schedule: rate(5 minutes)
             Enabled: !Ref ScheduleEnabled
 
 Outputs:

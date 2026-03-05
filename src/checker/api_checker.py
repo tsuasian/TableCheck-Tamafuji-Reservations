@@ -7,6 +7,7 @@ Uses the discovered JSON API endpoints:
 No browser needed — just httpx with a session cookie + CSRF token.
 """
 
+import asyncio
 import re
 from datetime import date, datetime
 
@@ -14,6 +15,12 @@ import httpx
 
 from src.checker.models import AvailabilitySnapshot, SlotStatus, TimeSlot
 from src.config import Config
+
+# Delay between date checks to avoid 429s (seconds)
+REQUEST_DELAY = 1.0
+# Retry config for 429s
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 5.0  # seconds, doubles each retry
 
 
 class TableCheckSession:
@@ -27,7 +34,7 @@ class TableCheckSession:
         self._csrf: str = ""
 
     async def __aenter__(self):
-        self._client = httpx.AsyncClient(follow_redirects=True)
+        self._client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
         await self._init_session()
         return self
 
@@ -37,11 +44,20 @@ class TableCheckSession:
 
     async def _init_session(self):
         """Load the reservation page to get CSRF token and session cookie."""
-        resp = await self._client.get(
-            f"{self.BASE_URL}/en/shops/{self.shop_slug}/reserve",
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        resp.raise_for_status()
+        for attempt in range(MAX_RETRIES + 1):
+            resp = await self._client.get(
+                f"{self.BASE_URL}/en/shops/{self.shop_slug}/reserve",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if resp.status_code == 429:
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    print(f"  429 on session init, retrying in {delay}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    await asyncio.sleep(delay)
+                    continue
+                resp.raise_for_status()
+            resp.raise_for_status()
+            break
 
         match = re.search(
             r'name="authenticity_token"[^>]*value="([^"]+)"', resp.text
@@ -53,17 +69,25 @@ class TableCheckSession:
     async def _api_get(self, path: str, params: dict) -> dict:
         """Make an authenticated GET request to a TableCheck API endpoint."""
         params["authenticity_token"] = self._csrf
-        resp = await self._client.get(
-            f"{self.BASE_URL}/en/shops/{self.shop_slug}/{path}",
-            params=params,
-            headers={
-                "Accept": "application/json",
-                "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "Mozilla/5.0",
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(MAX_RETRIES + 1):
+            resp = await self._client.get(
+                f"{self.BASE_URL}/en/shops/{self.shop_slug}/{path}",
+                params=params,
+                headers={
+                    "Accept": "application/json",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            if resp.status_code == 429:
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    print(f"  429 on {path}, retrying in {delay}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    await asyncio.sleep(delay)
+                    continue
+                resp.raise_for_status()
+            resp.raise_for_status()
+            return resp.json()
 
     async def get_sheets(
         self, target_date: date, party_size: int
@@ -133,14 +157,28 @@ async def check_availability(
 async def check_multiple_dates(
     dates: list[date],
     party_size: int = Config.DEFAULT_PARTY_SIZE,
+    session: TableCheckSession | None = None,
 ) -> list[AvailabilitySnapshot]:
     """Check availability across multiple dates, reusing one session."""
-    async with TableCheckSession() as session:
-        results = []
-        for d in dates:
-            snapshot = await _check_with_session(session, d, party_size)
-            results.append(snapshot)
-        return results
+    if session:
+        return await _check_dates_with_session(session, dates, party_size)
+    async with TableCheckSession() as new_session:
+        return await _check_dates_with_session(new_session, dates, party_size)
+
+
+async def _check_dates_with_session(
+    session: TableCheckSession,
+    dates: list[date],
+    party_size: int,
+) -> list[AvailabilitySnapshot]:
+    """Check multiple dates with throttling between requests."""
+    results = []
+    for i, d in enumerate(dates):
+        snapshot = await _check_with_session(session, d, party_size)
+        results.append(snapshot)
+        if i < len(dates) - 1:
+            await asyncio.sleep(REQUEST_DELAY)
+    return results
 
 
 async def _check_with_session(
@@ -158,17 +196,24 @@ async def _check_with_session(
     # Cross-reference: for each bookable slot, check if it's available
     date_str = target_date.isoformat()
     date_slots = timetable.get("slots", {}).get(date_str, {})
+    has_timetable_data = bool(date_slots)
 
     slots = []
     for display_time, epoch in sheets:
         epoch_str = str(epoch)
         slot_data = date_slots.get(epoch_str, {})
-        is_available = slot_data.get("available", False)
+
+        if has_timetable_data:
+            is_available = slot_data.get("available", False)
+            status = SlotStatus.AVAILABLE if is_available else SlotStatus.UNAVAILABLE
+        else:
+            # Timetable empty — date is outside the booking window
+            status = SlotStatus.UNKNOWN
 
         slots.append(TimeSlot(
             date=target_date,
             time=_parse_display_time(display_time),
-            status=SlotStatus.AVAILABLE if is_available else SlotStatus.UNAVAILABLE,
+            status=status,
             party_size=party_size,
         ))
 
