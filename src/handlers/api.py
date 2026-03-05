@@ -19,6 +19,7 @@ import boto3
 
 # Validation constants
 PHONE_RE = re.compile(r"^\+\d{10,15}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLOSED_WEEKDAYS = {1}  # Tuesday (0=Monday)
 MAX_PARTY_SIZE = 10
@@ -55,12 +56,18 @@ def _create_watch(event):
         return _response(400, {"error": "Invalid JSON body"})
 
     phone = body.get("phone")
+    name = body.get("name")
+    email = body.get("email")
     dates = body.get("dates")
     party_size = body.get("party_size")
     preferred_times = body.get("preferred_times")
 
     # Validate required fields
     errors = []
+    if not name or not isinstance(name, str) or not name.strip():
+        errors.append("name is required and must be a non-empty string")
+    if not email or not isinstance(email, str) or not EMAIL_RE.match(email):
+        errors.append("email is required and must be a valid email address")
     if not phone or not PHONE_RE.match(phone):
         errors.append("phone is required and must be E.164 format (e.g. +18081234567)")
     if not dates or not isinstance(dates, list):
@@ -85,6 +92,8 @@ def _create_watch(event):
         "PK": f"USER#{phone}",
         "SK": f"WATCH#{watch_id}",
         "phone": phone,
+        "name": name.strip(),
+        "email": email.strip().lower(),
         "watch_id": watch_id,
         "dates": dates,
         "party_size": party_size,
@@ -150,6 +159,20 @@ def _update_watch(event):
     # Build update expression
     errors = []
     update_fields = {}
+
+    if "name" in body:
+        n = body["name"]
+        if not isinstance(n, str) or not n.strip():
+            errors.append("name must be a non-empty string")
+        else:
+            update_fields["name"] = n.strip()
+
+    if "email" in body:
+        e = body["email"]
+        if not isinstance(e, str) or not EMAIL_RE.match(e):
+            errors.append("email must be a valid email address")
+        else:
+            update_fields["email"] = e.strip().lower()
 
     if "dates" in body:
         if not isinstance(body["dates"], list):
@@ -278,6 +301,8 @@ def _format_watch(item):
     result = {
         "watch_id": item.get("watch_id", item["SK"].replace("WATCH#", "")),
         "phone": item.get("phone", item["PK"].replace("USER#", "")),
+        "name": item.get("name"),
+        "email": item.get("email"),
         "dates": item.get("dates", []),
         "party_size": int(item.get("party_size", 2)),
         "preferred_times": item.get("preferred_times"),

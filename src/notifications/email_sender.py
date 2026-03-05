@@ -23,6 +23,7 @@ class EmailSender:
         self,
         slots: list[TimeSlot],
         to_email: str,
+        name: str = None,
     ) -> str:
         """Send email alert for newly available slots.
 
@@ -37,8 +38,8 @@ class EmailSender:
             Message={
                 "Subject": {"Data": self._format_subject(slots), "Charset": "UTF-8"},
                 "Body": {
-                    "Text": {"Data": self._format_body_text(slots), "Charset": "UTF-8"},
-                    "Html": {"Data": self._format_body_html(slots), "Charset": "UTF-8"},
+                    "Text": {"Data": self._format_body_text(slots, name=name), "Charset": "UTF-8"},
+                    "Html": {"Data": self._format_body_html(slots, name=name), "Charset": "UTF-8"},
                 },
             },
         )
@@ -64,24 +65,25 @@ class EmailSender:
             return f"Tamafuji: {s.display_date} @ {s.display_time} available!"
         return f"Tamafuji: {len(slots)} slots available!"
 
-    def _format_body_text(self, slots: list[TimeSlot]) -> str:
+    def _format_body_text(self, slots: list[TimeSlot], name: str = None) -> str:
         """Plain text body (same format as SMS)."""
+        greeting = f"Hi {name},\n\n" if name else ""
         if len(slots) == 1:
             s = slots[0]
             return (
-                f"Tamafuji slot open!\n"
+                f"{greeting}Tamafuji slot open!\n"
                 f"{s.display_date} @ {s.display_time} (party of {s.party_size})\n"
                 f"Book now: {self.BOOKING_URL}"
             )
 
-        lines = ["Tamafuji slots open!\n"]
+        lines = [f"{greeting}Tamafuji slots open!\n"]
         for s in slots:
             lines.append(f"- {s.display_date} @ {s.display_time}")
         lines.append(f"\nParty of {slots[0].party_size}")
         lines.append(f"Book: {self.BOOKING_URL}")
         return "\n".join(lines)
 
-    def _format_body_html(self, slots: list[TimeSlot]) -> str:
+    def _format_body_html(self, slots: list[TimeSlot], name: str = None) -> str:
         """HTML body with table and booking link."""
         rows = ""
         for s in slots:
@@ -93,11 +95,13 @@ class EmailSender:
                 f"</tr>"
             )
 
+        greeting = f"<p>Hi {name},</p>\n" if name else ""
+
         return f"""\
 <html>
 <body style="font-family:sans-serif;color:#333">
 <h2 style="color:#b91c1c">Tamafuji Reservation Alert</h2>
-<p>New availability detected:</p>
+{greeting}<p>New availability detected:</p>
 <table style="border-collapse:collapse;margin:16px 0">
 <tr style="background:#f3f4f6">
 <th style="padding:6px 12px;border:1px solid #ddd;text-align:left">Date</th>

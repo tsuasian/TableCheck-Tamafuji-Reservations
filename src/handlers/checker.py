@@ -97,6 +97,8 @@ def _get_active_watches(table) -> list[dict]:
             "party_size": int(item.get("party_size", 2)),
             "dates": dates,
             "preferred_times": item.get("preferred_times"),
+            "email": item.get("email"),
+            "name": item.get("name"),
         })
     return watches
 
@@ -181,9 +183,9 @@ def _send_alerts(
         except Exception as e:
             print(f"  ERROR sending SMS to {watch['phone']}: {e}")
 
-    # --- Email channel ---
+    # --- Email channel (per-watch) ---
     email_sender = None
-    if Config.NOTIFY_EMAILS:
+    if Config.SES_FROM_EMAIL:
         try:
             from src.notifications.email_sender import EmailSender
             email_sender = EmailSender()
@@ -191,19 +193,21 @@ def _send_alerts(
             print(f"Email not available: {e}")
 
     if email_sender:
-        for to_email in Config.NOTIFY_EMAILS:
-            for watch in watches:
-                matching = _match_slots(watch, newly_available, state, to_email)
-                if not matching:
-                    continue
-                print(f"Email alerting {to_email}: {len(matching)} slot(s)")
-                try:
-                    email_sender.send_availability_alert(matching, to_email)
-                    for slot in matching:
-                        state.record_notification(to_email, slot, watch["watch_id"])
-                    alerts_sent += 1
-                except Exception as e:
-                    print(f"  ERROR sending email to {to_email}: {e}")
+        for watch in watches:
+            to_email = watch.get("email")
+            if not to_email:
+                continue
+            matching = _match_slots(watch, newly_available, state, to_email)
+            if not matching:
+                continue
+            print(f"Email alerting {to_email}: {len(matching)} slot(s)")
+            try:
+                email_sender.send_availability_alert(matching, to_email, name=watch.get("name"))
+                for slot in matching:
+                    state.record_notification(to_email, slot, watch["watch_id"])
+                alerts_sent += 1
+            except Exception as e:
+                print(f"  ERROR sending email to {to_email}: {e}")
 
     if not sms and not email_sender:
         print("No notification channels available")
